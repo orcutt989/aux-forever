@@ -1,12 +1,19 @@
 -- Run from the auxForever folder: lua5.1 ../tests/load_test.lua
--- Fast tooltip/basics loop: lua5.1 ../tests/load_test.lua smoke
+-- Fast tooltip loop:            lua5.1 ../tests/load_test.lua smoke
+-- Local basics contract:        lua5.1 ../tests/load_test.lua basics
+-- Classic look (full suite):    lua5.1 ../tests/load_test.lua classic
 -- Load test: stub the WoW API, load every file in TOC order, then fire the startup events
 -- (ADDON_LOADED, PLAYER_LOGIN), open the auction house, run OnUpdate scripts a few times and
 -- walk through a commodity purchase.
+-- Exits with status 1 when any check failed (so local scripts and CI can stop on red).
 local G = _G
 local frames = {}
 local MODE = arg and arg[1]
 local SMOKE_ONLY = (MODE == 'smoke')
+local BASICS_ONLY = (MODE == 'basics')
+local DE_ONLY = (MODE == 'de')
+local SUFFIX_LEAK_ONLY = (MODE == 'suffix-leak')
+local EARLY_EXIT = SMOKE_ONLY or BASICS_ONLY or DE_ONLY or SUFFIX_LEAK_ONLY
 local NUMERIC = { GetRight=1, GetLeft=1, GetTop=1, GetBottom=1, GetWidth=1, GetHeight=1, GetNumber=1, GetScale=1, GetEffectiveScale=1, GetAlpha=1, GetID=1, GetNumPoints=1, GetVerticalScroll=1, GetHorizontalScroll=1, GetCursorPosition=1, GetStringWidth=1, GetTextWidth=1, GetFrameLevel=1, GetValue=1 }
 local function new_frame(name)
   local f = { __scripts = {}, __events = {}, __name = name, __shown = true, __text = '' }
@@ -74,14 +81,20 @@ G.IsShiftKeyDown = function() return false end; G.IsAltKeyDown = G.IsShiftKeyDow
 G.PlaySound = function() end; G.ClearCursor = function() end; G.StaticPopup_Show = function() end; G.StaticPopup_Hide = function() end
 for _, s in ipairs{'LIGHTYELLOW_FONT_COLOR_CODE','FONT_COLOR_CODE_CLOSE','GRAY_FONT_COLOR_CODE','HOURS','ITEM_SPELL_CHARGES'} do G[s] = s end
 for i, q in ipairs{'Poor', 'Common', 'Uncommon', 'Rare', 'Epic'} do G['ITEM_QUALITY' .. (i - 1) .. '_DESC'] = q end
+-- Without these, info.auctionable sees nil ~= nil and treats every empty tip as not auctionable,
+-- so Value lines never appear in early/basics tests.
+for _, s in ipairs{'ITEM_BIND_ON_PICKUP', 'ITEM_BIND_QUEST', 'ITEM_SOULBOUND', 'ITEM_CONJURED', 'ITEM_MIN_LEVEL'} do G[s] = s end
 G.ITEM_SPELL_CHARGES = '%d Charges'; G.AUCTION_DURATION_ONE = '2 Hours'; G.AUCTION_DURATION_TWO = '8 Hours'; G.AUCTION_DURATION_THREE = '24 Hours'
 setmetatable(G, {__index=function(_, k) if type(k)=='string' and (k:match('Button$') or k:match('ScrollBar$') or k:match('Text$') or k:match('Icon$') or k:match('Count$') or k:match('Text[LR]%a+%d+$')) then return new_frame(k) end end})
 
 local errors = 0
 local function try(label, f, ...)
-  if SMOKE_ONLY and type(label) == 'string' then
+  if EARLY_EXIT and type(label) == 'string' then
     local allow = label:match('^load ')
       or label:match('^smoke:')
+      or label:match('^basics:')
+      or label:match('^de%-tip:')
+      or label:match('^suffix%-leak:')
       or label == 'ADDON_LOADED'
       or label == 'PLAYER_LOGIN'
       or label == 'AUCTION_HOUSE_SHOW'
@@ -92,6 +105,12 @@ local function try(label, f, ...)
   end
   local ok, err = pcall(f, ...)
   if not ok then errors = errors + 1; print('ERROR', label, err) end
+end
+local function finish()
+  print('done, errors: ' .. errors)
+  if errors > 0 then
+    os.exit(1)
+  end
 end
 local addon = {}
 for line in io.lines('auxForever.toc') do
@@ -111,7 +130,9 @@ THEME = (MODE == 'classic') and 'classic' or 'new'
 if THEME == 'classic' then G.aux = {account = {theme = 'classic'}} end
 -- a value the test expects, by look
 local function pick(new, classic) if THEME == 'classic' then return classic end return new end
-print('look: ' .. THEME .. (SMOKE_ONLY and ' (smoke only)' or ''))
+local mode_note = SUFFIX_LEAK_ONLY and ' (suffix-leak only)'
+  or (DE_ONLY and ' (de only)' or (SMOKE_ONLY and ' (smoke only)' or (BASICS_ONLY and ' (basics only)' or '')))
+print('look: ' .. THEME .. mode_note)
 fire('ADDON_LOADED', 'auxForever')
 fire('PLAYER_LOGIN')
 fire('ADDON_LOADED', 'Blizzard_AuctionHouseUI')
@@ -137,14 +158,39 @@ local function same(a, b)
   for i = 1, #a do if a[i] ~= b[i] then return false end end
   return true
 end
-local smoke_dir = (arg and arg[0] or ''):gsub('[^/\\]*$', '')
-dofile(smoke_dir .. 'smoke_test.lua')({
+local test_dir = (arg and arg[0] or ''):gsub('[^/\\]*$', '')
+if SUFFIX_LEAK_ONLY then
+  dofile(test_dir .. 'suffix_leak_scan.lua')({
+    G = G, check = check, try = try, addon = addon, tick = tick,
+  })
+  finish()
+  return
+end
+dofile(test_dir .. 'de_tooltip_test.lua')({
+  G = G, check = check, try = try, addon = addon, tick = tick,
+})
+if DE_ONLY then
+  finish()
+  return
+end
+dofile(test_dir .. 'smoke_test.lua')({
   G = G, check = check, try = try, addon = addon, tick = tick,
 })
 if SMOKE_ONLY then
-  print('done, errors: ' .. errors)
+  finish()
   return
 end
+dofile(test_dir .. 'basics_test.lua')({
+  G = G, check = check, try = try, addon = addon, tick = tick,
+})
+if BASICS_ONLY then
+  finish()
+  return
+end
+-- Full suite: also run the leak scan against the exported fixture / seed list.
+dofile(test_dir .. 'suffix_leak_scan.lua')({
+  G = G, check = check, try = try, addon = addon, tick = tick,
+})
 try('buy bar', function()
   local require = loadstring("select(2, ...) 'aux.test'; return require")('auxForever', addon)
   local bar = require 'aux.gui.buy_bar'
@@ -3655,9 +3701,28 @@ end)
 -- White shirts (Brawler's Harness) must not show disenchant lines
 try('disenchant skips whites and shirts', function()
   local de = assert(loadstring("select(2, ...) 'aux.core.disenchant'; return _M"))('auxForever', addon)
+  local info_mod = assert(loadstring("select(2, ...) 'aux.util.info'; return _M"))('auxForever', addon)
   check('de: white chest empty', #de.distribution('INVTYPE_CHEST', 1, 20) == 0)
   check('de: shirt slot empty even if uncommon', #de.distribution('INVTYPE_BODY', 2, 20) == 0)
+  check('de: tabard slot empty even if uncommon', #de.distribution('INVTYPE_TABARD', 2, 20) == 0)
   check('de: green chest has outcomes', #de.distribution('INVTYPE_CHEST', 2, 20) > 0)
+  local white = '|cnlQ1:|Hitem:6125::::::::17:1486::75:::::::|h[Brawler\'s Harness]|h|r'
+  local green = '|cnIQ2:|Hitem:6545::::::::20:1489:::::::|h[Soldier\'s Boots]|h|r'
+  check('de: forever white named link is common', info_mod.quality_from_link(white) == 1)
+  check('de: forever green named link is uncommon', info_mod.quality_from_link(green) == 2)
+  check('de: white link overrides wrong uncommon GetItemInfo',
+    info_mod.disenchant_quality({ quality = 2 }, white) == 1)
+  check('de: green link overrides wrong common GetItemInfo',
+    info_mod.disenchant_quality({ quality = 1 }, green) == 2)
+  check('de: bare + tip_quality white', info_mod.disenchant_quality({ quality = 2 }, 'item:6125', 1) == 1)
+  check('de: bare + tip_quality green', info_mod.disenchant_quality({ quality = 1 }, 'item:6545', 2) == 2)
+  check('de: prefer colored hyperlink over bare GetItem',
+    info_mod.prefer_quality_link('item:6125', white) == white)
+  local real_q = G.C_Item.GetItemQualityByID
+  G.C_Item.GetItemQualityByID = function() return nil end
+  local q = info_mod.disenchant_quality({ quality = 2 }, 'item:6125')
+  G.C_Item.GetItemQualityByID = real_q
+  check('de: bare falls back to GetItemInfo quality', q == 2)
 end)
 
 -- Forever: random-suffix +stats missing from SetItemKey / stripped GetItem() links (FB-023)
@@ -3679,7 +3744,7 @@ try('suffix stats on tooltip', function()
     return dest
   end
   G.C_Item.GetItemStats = G.GetItemStats
-  local lines = {}
+  local lines = { 'Soldier\'s Boots' } -- add_suffix_stats no-ops on an empty tip
   rawset(G.GameTooltip, 'NumLines', function() return #lines end)
   rawset(G.GameTooltip, 'AddLine', function(_, text) tinsert(lines, text) end)
   rawset(G.GameTooltip, 'Show', function() end)
@@ -3700,7 +3765,8 @@ try('suffix stats on tooltip', function()
   check('suffix: does not duplicate lines already shown', #lines == before)
   info_mod.remember_suffix_link(6545, 14312, auction_link)
   check('suffix: remembered link for Fast parent item key', tip_mod.link_for_item_key({ itemID = 6545, itemSuffix = 14312 }) == auction_link)
-  check('suffix: no synthetic GetItemStats work on the hover path', tip_mod.link_for_item_key({ itemID = 9999, itemSuffix = 14312 }) == nil)
+  -- Synthetic is allowed when GetItemStats yields +stats; a dead suffix must still return nil.
+  check('suffix: synthetic ignored when GetItemStats empty', tip_mod.link_for_item_key({ itemID = 9999, itemSuffix = 999999 }) == nil)
   tip_mod.cache_suffix_stats(auction_link)
   check('suffix: cache_suffix_stats stores lines', tip_mod.suffix_stat_lines(auction_link) ~= nil)
 end)
@@ -3712,4 +3778,4 @@ dofile((arg and arg[0] or ''):gsub('[^/\\]*$', '') .. 'timing_test.lua')({
   dir = (arg and arg[0] or ''):gsub('[^/\\]*$', ''),
 })
 
-print('done, errors: ' .. errors)
+finish()

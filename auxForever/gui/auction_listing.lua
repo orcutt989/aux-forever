@@ -668,6 +668,13 @@ local methods = {
         GameTooltip:SetOwner(owner, 'ANCHOR_RIGHT')
         local key = record.browse_key
         local stats_link = key and tooltip.link_for_item_key(key)
+        local inject_link = stats_link or record.link
+        -- note_hover before SetItemKey/SetHyperlink so the Forever tip post-call can read
+        -- record.suffix_stats after Show() rebuilds the tip and strips bonus IDs.
+        tooltip.note_hover(record, inject_link)
+        if inject_link and not record.suffix_stats then
+            record.suffix_stats = tooltip.cache_suffix_stats(inject_link)
+        end
         if stats_link then
             tooltip.note_link(GameTooltip, stats_link)
             GameTooltip:SetHyperlink(stats_link)
@@ -675,11 +682,11 @@ local methods = {
             GameTooltip:SetItemKey(key.itemID, key.itemLevel or 0, key.itemSuffix or 0, record.requirement or 0)
         else
             stats_link = record.link
+            inject_link = stats_link
+            tooltip.note_hover(record, inject_link)
             tooltip.note_link(GameTooltip, stats_link)
             GameTooltip:SetHyperlink(stats_link)
         end
-        local inject_link = stats_link or record.link
-        tooltip.note_hover(record, inject_link)
         GameTooltip_ShowCompareItem()
         gui.add_click_hint(GameTooltip, click_hint)
         GameTooltip:Show()

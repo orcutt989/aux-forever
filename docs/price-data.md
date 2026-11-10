@@ -121,9 +121,10 @@ numbers with two jobs:
   lowest when there was none that day), with its age. Shown as Value in tooltips and used by the
   recipe cost line.
 - **Usual price** (`history.value`): the multi-day weighted median above. Used to find deals: the
-  Sniper's rule, the search % column, the Post tab's % badge, the percentage and profit filters,
-  disenchant values. Tooltips show it as a gray "usually ..." line only when it differs from the
-  latest by 30% or more (`USUALLY_SHARE`).
+  Sniper's rule, the search % column, the Post tab's % badge, and the percentage and profit filters.
+  Tooltips show it as a gray "usually ..." line only when it differs from the latest by 30% or more
+  (`USUALLY_SHARE`). Disenchant expected value uses **latest** mat prices (with usual as fallback),
+  so a tip's Disenchant: line matches today's reagents, not a stale usual day.
 - Build 3 test: a Full scan alone recorded Rough Dynamite at 30c, the same as its lowest listing
   (514 listed), so Full scan prices look right. Linen Cloth showed 32c while 296 were listed at
   23c: the average of the cheapest 20% reached up to 36c in a deep market. Build 4 changed the

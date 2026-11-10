@@ -6,6 +6,28 @@ finished. The steps below are the same as on the page, for anyone testing withou
 
 If BugSack shows an error at any point, copy its full text into that step's note.
 
+## Local tests (no game client)
+
+Prefer these until they are green. They stub the WoW API in Lua 5.1 and exit 1 on failure.
+
+```
+cd auxForever
+lua5.1 ../tests/load_test.lua basics    # DE / value / vendor / suffix / money / buy bar
+lua5.1 ../tests/load_test.lua smoke     # fast tooltip matrix (Forever |cnIQ + Classic hex)
+lua5.1 ../tests/load_test.lua           # full suite
+```
+
+Windows one-shot: `powershell -File tests/test-basics.ps1` (syntax + basics + smoke).
+
+Suffix-leak finder (every item in your Forever aux cache — no hand-maintained list):
+
+```
+powershell -File tests/test-suffix-leak.ps1
+```
+
+Writes `tests/fixtures/suffix_leak_ids.tsv` from SavedVariables and, on failure,
+`tests/fixtures/suffix_leak_victims.tsv` (id + name of every tip that inherited of-the-X +stats).
+
 Current test page: https://claude.ai/artifact/LUCZVgJV27irizAyKHTjhJ (private to Tyler)
 
 ## Current build: suffix tooltip stats (FB-023, unreleased)

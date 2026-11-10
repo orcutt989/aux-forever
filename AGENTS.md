@@ -109,14 +109,18 @@ The test harness stubs the WoW API in plain Lua 5.1 and loads every file in TOC 
 
 ```
 cd auxForever
-lua5.1 ../tests/load_test.lua      # must end with: done, errors: 0
+lua5.1 ../tests/load_test.lua basics    # local contract: DE/value/vendor/suffix/money/buy bar
+lua5.1 ../tests/load_test.lua smoke     # fast tooltip DE matrix + suffix inject
+lua5.1 ../tests/load_test.lua           # full suite (must end: done, errors: 0; exits 1 on fail)
 lua5.1 ../tests/load_test.lua classic   # the same in the Classic look (0.6)
-lua5.1 ../tests/load_test.lua smoke     # fast: tooltip DE/value/vendor + suffix inject only
 for f in $(find . -name '*.lua'); do luac5.1 -p "$f"; done   # syntax check
 ```
 
+On Windows: `powershell -File tests/test-basics.ps1` (syntax + basics + smoke, non-zero exit on
+fail). Prefer `basics` / that script while fixing tooltip DE; use the full suite before a push.
+
 In game, `/aux smoke` prints tooltip switches and whether DE / value / vendor lines are on the
-open tip (hover green gear first). Use it when a tooltip change might have wiped those lines.
+open tip (hover green gear first). Use it only after the local suite is green.
 
 - Setup on Ubuntu/Debian (also a Jules setup script): `sudo apt-get update && sudo apt-get install -y lua5.1 zip`
 - GitHub Actions runs the same checks on every push and pull request (`.github/workflows/test.yml`)

@@ -45,6 +45,24 @@ function M.note_link(tooltip, link)
     end
 end
 
+-- AuxSuffixFix lesson: TooltipDataProcessor runs inside SetHyperlink, so the full auction
+-- link must be stashed before that call. note_link alone is not enough if something else
+-- invokes SetHyperlink without going through ShowRecordTooltip.
+local function wrap_sethyperlink(tooltip)
+    if not tooltip or tooltip.AuxForever_SetHyperlinkWrapped then
+        return
+    end
+    local orig = tooltip.SetHyperlink
+    if type(orig) ~= 'function' then
+        return
+    end
+    tooltip.SetHyperlink = function(self, link, ...)
+        note_link(self, link)
+        return orig(self, link, ...)
+    end
+    tooltip.AuxForever_SetHyperlinkWrapped = true
+end
+
 function M.note_hover(record, link)
     last_hover.record = record
     if type(link) == 'string' then
@@ -60,37 +78,47 @@ end
 
 -- Always fill a fresh table. A shared GetItemStats return value keeps leftover keys from the
 -- previous item, which made "full link vs base" deltas all zero.
+-- Forever: prefer C_Item.GetItemStats(link) with no dest table (AuxSuffixFix). The global
+-- GetItemStats often exists but returns an empty table, which previously masked C_Item.
 local function copy_stats(link)
     link = item_string(link)
     if not link then
         return
     end
-    local t = {}
-    local ok, result = pcall(function()
-        if GetItemStats then
-            return GetItemStats(link, t)
+    local function take(src)
+        if type(src) ~= 'table' then
+            return
         end
-        if C_Item and C_Item.GetItemStats then
-            return C_Item.GetItemStats(link, t)
+        local copy = {}
+        for k, v in pairs(src) do
+            -- Forever may hand out secret numbers; keep values that compare as numbers.
+            if type(v) == 'number' or (issecretvalue and issecretvalue(v)) then
+                copy[k] = v
+            end
         end
-    end)
-    if not ok then
-        return
+        return next(copy) and copy or nil
     end
-    local src = result
-    if type(src) ~= 'table' or not next(src) then
-        src = t
-    end
-    if type(src) ~= 'table' then
-        return
-    end
-    local copy = {}
-    for k, v in pairs(src) do
-        if type(v) == 'number' then
-            copy[k] = v
+    if C_Item and C_Item.GetItemStats then
+        local ok, result = pcall(C_Item.GetItemStats, link)
+        local copy = ok and take(result)
+        if copy then
+            return copy
+        end
+        local dest = {}
+        ok, result = pcall(C_Item.GetItemStats, link, dest)
+        copy = ok and (take(result) or take(dest))
+        if copy then
+            return copy
         end
     end
-    return next(copy) and copy or nil
+    if GetItemStats then
+        local dest = {}
+        local ok, result = pcall(GetItemStats, link, dest)
+        local copy = ok and (take(result) or take(dest))
+        if copy then
+            return copy
+        end
+    end
 end
 
 local function stat_label(key)
@@ -137,16 +165,22 @@ function M.suffix_stat_lines(link)
     local base = copy_stats('item:' .. item_id) or {}
     local lines, seen = {}, {}
     local function add(label, amount)
-        if amount and amount > 0 and label and not seen[label] then
+        if not label or seen[label] or amount == nil then
+            return
+        end
+        local ok, positive = pcall(function() return amount > 0 end)
+        if ok and positive then
             seen[label] = true
             tinsert(lines, { label = label, amount = amount })
         end
     end
     for k, v in pairs(with) do
-        if k ~= 'RESISTANCE0_NAME' then
+        -- DPS / armor are base weapon/armor fields, not random-suffix bonuses.
+        if k ~= 'RESISTANCE0_NAME' and k ~= 'DAMAGE_PER_SECOND' then
             local label = stat_label(k)
-            local delta = v - (base[k] or 0)
-            if delta > 0 then
+            local base_v = base[k] or 0
+            local ok, delta = pcall(function() return v - base_v end)
+            if ok then
                 add(label, delta)
             end
         end
@@ -161,6 +195,28 @@ function M.suffix_stat_lines(link)
     return nonempty_stat_lines(lines)
 end
 
+-- Drop weapon DPS (and any pre-poisoned DPS labels) from injectable +stat lines.
+local function filter_suffix_lines(lines)
+    if not lines or #lines == 0 then
+        return
+    end
+    local dps_label = _G.DAMAGE_PER_SECOND
+    local out = {}
+    for _, entry in ipairs(lines) do
+        local label = entry and entry.label
+        if label and label ~= 'DAMAGE_PER_SECOND' and not (dps_label and label == dps_label) then
+            tinsert(out, entry)
+        end
+    end
+    return nonempty_stat_lines(out)
+end
+
+local function same_item_id(a, b)
+    local id_a = info.item_id_from_link(a) or (type(a) == 'number' and a)
+    local id_b = info.item_id_from_link(b) or (type(b) == 'number' and b)
+    return id_a and id_b and id_a == id_b
+end
+
 -- Precomputed +stat lines by item string, filled when search results arrive (not on hover).
 function M.cache_suffix_stats(link)
     link = item_string(link)
@@ -168,7 +224,7 @@ function M.cache_suffix_stats(link)
         return
     end
     -- Inside this module call the env name, not M.suffix_stat_lines: M has no __index.
-    local lines = nonempty_stat_lines(suffix_stat_lines(link))
+    local lines = filter_suffix_lines(suffix_stat_lines(link))
     if lines then
         cached_suffix_lines[link] = lines
     end
@@ -180,7 +236,14 @@ suffix_retry:Hide()
 suffix_retry:SetScript('OnUpdate', function(self)
     -- Forever: a late GameTooltip:Show() rebuilds the tip and drops aux AddLines (DE / value /
     -- vendor). AddLine on an already-open tip is enough; never Show() from this retry.
-    if retry_tip and retry_tip:IsShown() then
+    if retry_tip and retry_tip:IsShown() and retry_link then
+        local tip_link = last_link[retry_tip]
+        -- Tip moved to another item while frames were pending — do not paint prior +stats.
+        if not tip_link or not same_item_id(tip_link, retry_link) then
+            retry_frames = 0
+            self:Hide()
+            return
+        end
         local ok, added = pcall(add_suffix_stats, retry_tip, retry_link)
         if ok and added then
             retry_frames = 0
@@ -202,14 +265,24 @@ function M.add_suffix_stats(tooltip, link)
     if tooltip:NumLines() < 1 then
         return false
     end
+    local tip_id = info.item_id_from_link(link)
     -- Empty tables from an early (failed) cache must not block a later GetItemStats retry.
-    local lines = nonempty_stat_lines(cached_suffix_lines[link])
-        or nonempty_stat_lines(last_hover.record and last_hover.record.suffix_stats)
-        or suffix_stat_lines(link)
+    -- last_hover.record.suffix_stats is only for the same item_id — never the next tip.
+    local lines = filter_suffix_lines(cached_suffix_lines[link])
+    if not lines then
+        local record = last_hover.record
+        local record_id = record and (record.item_id or info.item_id_from_link(record.link))
+        if record and tip_id and record_id and tip_id == record_id then
+            lines = filter_suffix_lines(record.suffix_stats)
+        end
+    end
+    lines = lines or filter_suffix_lines(suffix_stat_lines(link))
     if lines then
         cached_suffix_lines[link] = lines
-        if last_hover.record then
-            last_hover.record.suffix_stats = lines
+        local record = last_hover.record
+        local record_id = record and (record.item_id or info.item_id_from_link(record.link))
+        if record and tip_id and record_id and tip_id == record_id then
+            record.suffix_stats = lines
         end
     else
         return false
@@ -228,7 +301,24 @@ function M.add_suffix_stats(tooltip, link)
     return added
 end
 
--- Hover path: only a remembered auction link (never synthetic GetItemStats trials).
+-- Forever ItemKey.itemSuffix is often usable as a bonus id when no auction itemLink was
+-- remembered yet (Fast parent before the item is opened). Try bonus-ID form, then classic
+-- random-suffix field 7. Only return a candidate that GetItemStats can turn into +stat lines.
+function M.synthetic_suffix_link(item_id, item_suffix)
+    if not item_id or not item_suffix or item_suffix == 0 then
+        return
+    end
+    local candidates = {
+        format('item:%d::::::::::::1:%d', item_id, item_suffix),
+        format('item:%d::::::%d', item_id, item_suffix),
+    }
+    for _, candidate in ipairs(candidates) do
+        if nonempty_stat_lines(suffix_stat_lines(candidate)) then
+            return candidate
+        end
+    end
+end
+
 function M.link_for_item_key(item_key)
     if type(item_key) ~= 'table' or not item_key.itemID then
         return
@@ -237,12 +327,27 @@ function M.link_for_item_key(item_key)
     if suffix == 0 then
         return
     end
-    return info.suffix_link_for(item_key.itemID, suffix)
+    local remembered = info.suffix_link_for(item_key.itemID, suffix)
+    if remembered then
+        return remembered
+    end
+    local synthetic = synthetic_suffix_link(item_key.itemID, suffix)
+    if synthetic then
+        info.remember_suffix_link(item_key.itemID, suffix, synthetic)
+        return synthetic
+    end
 end
 
 function M.schedule_suffix_stats(tooltip, link)
     if not tooltip then
         return
+    end
+    -- Never downgrade a bonus/retry link to a stripped tip link (Show() re-entry post-call).
+    local previous = retry_link or last_link[tooltip]
+    if link and previous and info.item_link_has_bonus_ids(previous)
+        and not info.item_link_has_bonus_ids(link)
+        and info.item_id_from_link(previous) == info.item_id_from_link(link) then
+        link = previous
     end
     if link then
         -- Call the env binding, not M.note_link: M has no __index, so reads on M are nil.
@@ -333,11 +438,14 @@ function M.smoke_report()
         tinsert(lines_out, 'GetItemInfo: not ready for this item')
         return lines_out
     end
+    local quality = info.disenchant_quality(item_info, link, nil, GameTooltip)
     tinsert(lines_out, format(
-        'item: quality=%s slot=%s level=%s',
-        tostring(item_info.quality), tostring(item_info.slot), tostring(item_info.level)
+        'item: quality=%s (info=%s hover=%s title=%s) slot=%s level=%s',
+        tostring(quality), tostring(item_info.quality), tostring(info.quality_from_link(link)),
+        tostring(info.quality_from_tooltip_title(GameTooltip)),
+        tostring(item_info.slot), tostring(item_info.level)
     ))
-    local dist = disenchant.distribution(item_info.slot, item_info.quality, item_info.level)
+    local dist = disenchant.distribution(item_info.slot, quality, item_info.level)
     tinsert(lines_out, format('de table: %d outcomes', #dist))
     tinsert(lines_out, format(
         'open tip: Disenchants into=%s Disenchant:=%s Vendor:=%s Value:=%s',
@@ -346,10 +454,13 @@ function M.smoke_report()
         tip_has('Vendor:') and 'yes' or 'no',
         tip_has('Value:') and 'yes' or 'no'
     ))
-    if (s.disenchant_distribution or s.disenchant_value) and #dist > 0
-        and (item_info.quality or 0) >= 2
-        and not tip_has('Disenchant') then
-        tinsert(lines_out, 'FAIL: DE should show on this tip (switch on, green+ gear, table non-empty).')
+    local de_ok = quality == 2 or quality == 3 or quality == 4
+    if tip_has('Disenchant') and not de_ok then
+        tinsert(lines_out, 'FAIL: DE must not show on white/gray (or unreadable quality).')
+    end
+    if de_ok and #dist > 0 and not tip_has('Disenchant')
+        and (s.disenchant_distribution or s.disenchant_value) then
+        tinsert(lines_out, 'FAIL: DE should show on this green+ tip.')
     end
     if s.merchant_sell and (item_info.sell_price or 0) ~= 0 and not tip_has('Vendor:') then
         tinsert(lines_out, 'FAIL: Vendor should show on this tip.')
@@ -396,6 +507,8 @@ end
 
 function aux.event.AUX_LOADED()
     settings = aux.character_data.tooltip
+    wrap_sethyperlink(GameTooltip)
+    wrap_sethyperlink(ItemRefTooltip)
     TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, function(tooltip, data)
         if tooltip ~= GameTooltip and tooltip ~= ItemRefTooltip then
             return
@@ -403,12 +516,35 @@ function aux.event.AUX_LOADED()
         if tooltip.IsForbidden and tooltip:IsForbidden() then
             return
         end
-        local _, link = tooltip:GetItem()
-        link = last_link[tooltip] or link or data and data.hyperlink
-        if type(link) ~= 'string' or (issecretvalue and issecretvalue(link)) or not strfind(link, 'item:') then
+        local _, get_item_link = tooltip:GetItem()
+        -- Forever: GetItem() is often bare item:…; data.hyperlink still has |cnlQ1: / |cnIQ2:.
+        -- Never prefer last_link over this tip — a prior white/green hover poisoned DE.
+        local link = info.tip_item_link(
+            last_link[tooltip],
+            data and data.hyperlink,
+            get_item_link
+        )
+        if type(link) ~= 'string' then
             return
         end
-        extend_tooltip(tooltip, link, tooltip_quantity(tooltip))
+        local ok_item, has_item = pcall(function() return strfind(link, 'item:', 1, true) end)
+        if not ok_item or not has_item then
+            return
+        end
+        -- Keep suffix memory on the current tip item only. Do not replace a same-item bonus
+        -- auction link with a stripped Forever tip hyperlink (wipes of-the-X +stats).
+        local previous = last_link[tooltip]
+        if not (previous and info.item_link_has_bonus_ids(previous)
+            and not info.item_link_has_bonus_ids(link)
+            and info.item_id_from_link(previous) == info.item_id_from_link(link)) then
+            last_link[tooltip] = link
+            last_hover.link = link
+        else
+            link = previous
+        end
+        local tip_quality
+        pcall(function() tip_quality = info.quality_from_tooltip_data(data) end)
+        extend_tooltip(tooltip, link, tooltip_quantity(tooltip), tip_quality)
         pcall(schedule_suffix_stats, tooltip, link)
     end)
     aux.event_listener('GET_ITEM_INFO_RECEIVED', function(item_id, success)
@@ -420,8 +556,12 @@ function aux.event.AUX_LOADED()
         if link_id and link_id == item_id then
             cache_suffix_stats(link)
             -- Same as the retry frame: AddLine only. Show() here wiped DE/value on Forever.
+            -- Only inject when the open tip is still this item.
             if retry_tip and retry_tip:IsShown() then
-                pcall(add_suffix_stats, retry_tip, link)
+                local tip_link = last_link[retry_tip]
+                if tip_link and same_item_id(tip_link, link) then
+                    pcall(add_suffix_stats, retry_tip, link)
+                end
             end
         end
     end)
@@ -452,7 +592,7 @@ function M.age_suffix(age)
     return '  ' .. color('seen ' .. text)
 end
 
-function extend_tooltip(tooltip, link, quantity)
+function extend_tooltip(tooltip, link, quantity, tip_quality)
     local item_id, suffix_id = info.parse_link(link)
     quantity = IsShiftKeyDown() and quantity or 1
     -- auxForever (0.5): with Shift held the prices are for the whole stack; say so ("for 3"). In build
@@ -460,10 +600,14 @@ function extend_tooltip(tooltip, link, quantity)
     local per = quantity > 1 and ('  ' .. aux.color.label.enabled('for ' .. quantity)) or ''
     local item_info = info.item(item_id)
     -- auxForever: the disenchant table is only worked out when one of its lines is shown.
-    -- Skip white/gray (and shirts): they cannot be disenchanted.
+    -- Skip white/gray (and shirts). tip_quality is Forever's ItemName.quality when the hover link
+    -- is a bare item: string with no |cnIQ color.
+    local quality = item_info and info.disenchant_quality(item_info, link, tip_quality, tooltip)
+    -- Compare with explicit uncommon/rare/epic — (quality or 0) >= 2 can fail on Forever secrets.
+    local de_quality = quality == 2 or quality == 3 or quality == 4
     if item_info and (settings.disenchant_distribution or settings.disenchant_value)
-        and (item_info.quality or 0) >= 2 then
-        local distribution = disenchant.distribution(item_info.slot, item_info.quality, item_info.level)
+        and de_quality then
+        local distribution = disenchant.distribution(item_info.slot, quality, item_info.level)
         if #distribution > 0 then
             if settings.disenchant_distribution then
                 tooltip:AddLine('Disenchants into:', aux.color.tooltip.disenchant.distribution())
@@ -473,7 +617,7 @@ function extend_tooltip(tooltip, link, quantity)
                 end
             end
             if settings.disenchant_value then
-                local disenchant_value = disenchant.value(item_info.slot, item_info.quality, item_info.level)
+                local disenchant_value = disenchant.value(item_info.slot, quality, item_info.level)
                 if settings.money_icons then
                     tooltip:AddLine('Disenchant: ' .. (disenchant_value and GetCoinTextureString(disenchant_value) or UNKNOWN), aux.color.tooltip.disenchant.value())
                 else
