@@ -691,21 +691,45 @@ local methods = {
         rt:SetSort((descending and -1 or 1) * self.columnIndex)
     end,
 
+    -- Full item tooltip for a listing row (icon or whole row). Prefer a remembered auction link
+    -- with bonus IDs so random-suffix +stats can be injected after the tooltip builds.
+    ShowRecordTooltip = function(owner, record, click_hint)
+        if not record then
+            return
+        end
+        GameTooltip:SetOwner(owner, 'ANCHOR_RIGHT')
+        local key = record.browse_key
+        local stats_link = key and tooltip.link_for_item_key(key)
+        local inject_link = stats_link or record.link
+        -- note_hover before SetItemKey/SetHyperlink so the Forever tip post-call can read
+        -- record.suffix_stats after Show() rebuilds the tip and strips bonus IDs.
+        tooltip.note_hover(record, inject_link)
+        if inject_link and not record.suffix_stats then
+            record.suffix_stats = tooltip.cache_suffix_stats(inject_link)
+        end
+        if stats_link then
+            tooltip.note_link(GameTooltip, stats_link)
+            GameTooltip:SetHyperlink(stats_link)
+        elseif key and GameTooltip.SetItemKey then
+            GameTooltip:SetItemKey(key.itemID, key.itemLevel or 0, key.itemSuffix or 0, record.requirement or 0)
+        else
+            stats_link = record.link
+            inject_link = stats_link
+            tooltip.note_hover(record, inject_link)
+            tooltip.note_link(GameTooltip, stats_link)
+            GameTooltip:SetHyperlink(stats_link)
+        end
+        GameTooltip_ShowCompareItem()
+        gui.add_click_hint(GameTooltip, click_hint)
+        GameTooltip:Show()
+        pcall(tooltip.schedule_suffix_stats, GameTooltip, inject_link)
+    end,
+
     OnIconEnter = function(self)
         local rt = self:GetParent().row.rt
         local row = self:GetParent().row
         if row.record then
-	        GameTooltip:SetOwner(self, 'ANCHOR_RIGHT')
-            local key = row.record.browse_key
-            if key and GameTooltip.SetItemKey then
-                -- auxForever: a fast mode row has no link of its own; this shows its suffix too
-                GameTooltip:SetItemKey(key.itemID, key.itemLevel or 0, key.itemSuffix or 0, row.record.requirement or 0)
-            else
-                GameTooltip:SetHyperlink(row.record.link)
-            end
-            GameTooltip_ShowCompareItem()
-            gui.add_click_hint(GameTooltip, rt:ClickHint(row))
-            GameTooltip:Show()
+            rt.ShowRecordTooltip(self, row.record, rt:ClickHint(row))
         end
     end,
 
@@ -742,14 +766,11 @@ local methods = {
 
     OnEnter = function(self)
         local rt = self.rt
-        -- auxForever (0.5): every row says what its clicks do, in one gray line (was: only grouped
-        -- and fast rows, in white)
+        -- Forever: full item tooltip on the whole row (same as the icon). Heavier than click-hints
+        -- alone, but it is the path that reliably shows random-suffix +stats.
         if self.record then
-            GameTooltip_SetDefaultAnchor(GameTooltip, UIParent)
-            gui.add_click_hint(GameTooltip, rt:ClickHint(self), true)
-            GameTooltip:Show()
+            rt.ShowRecordTooltip(self, self.record, rt:ClickHint(self))
         end
-
         self.hover:Show()
     end,
 

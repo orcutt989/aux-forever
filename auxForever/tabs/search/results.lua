@@ -1010,6 +1010,12 @@ do
                 tinsert(loaded, auction_record)
             end,
             on_complete = function()
+                if #loaded == 0 then
+                    -- Timed out or the house never answered (common when it is overloaded).
+                    -- Do not say the item "sold" — that is usually wrong here.
+                    buy_bar.show_note(record.name, 'No answer from the auction house (try again)', aux.color.red)
+                    return
+                end
                 replace_item(search, record, loaded)
             end,
         }

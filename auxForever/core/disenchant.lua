@@ -5,11 +5,16 @@ local history = require 'aux.core.history'
 
 local UNCOMMON, RARE, EPIC = 2, 3, 4
 
+-- Shirts / tabards are never disenchantable even if Forever mis-labels the slot as chest.
+local NEVER = aux.set(
+    'INVTYPE_BODY',
+    'INVTYPE_TABARD'
+)
+
 local ARMOR = aux.set(
     'INVTYPE_HEAD',
     'INVTYPE_NECK',
     'INVTYPE_SHOULDER',
-    'INVTYPE_BODY',
     'INVTYPE_CHEST',
     'INVTYPE_ROBE',
     'INVTYPE_WAIST',
@@ -38,14 +43,22 @@ local WEAPON = aux.set(
 function M.value(slot, quality, level)
     local expectation
     for _, event in pairs(distribution(slot, quality, level)) do
-        local value = history.value(event.item_id .. ':' .. 0)
+        local key = event.item_id .. ':' .. 0
+        -- Latest mat price (what the AH just showed), same idea as tooltip Value:.
+        -- history.value (usual) ignores today's market until midnight and inflated Grunt Axe
+        -- DE to ~46s while Lesser Astral Essence was 8s today.
+        local value = select(1, history.latest(key)) or history.value(key)
         expectation = (expectation or 0) + event.probability * (event.min_quantity + event.max_quantity) / 2 * (value or 0)
     end
     return expectation
 end
 
 function M.distribution(slot, quality, level)
-    if not ARMOR[slot] and not WEAPON[slot] or level == 0 then
+    -- White/gray, shirts/tabards, and non-gear never disenchant; only green/blue/purple gear.
+    if NEVER[slot] or (not ARMOR[slot] and not WEAPON[slot]) or not level or level == 0 then
+        return {}
+    end
+    if quality ~= UNCOMMON and quality ~= RARE and quality ~= EPIC then
         return {}
     end
 

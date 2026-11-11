@@ -146,6 +146,7 @@ For whoever fixes or builds from it:
 | [FB-037](#fb-037-i-cant-scan-today) | 2026-11-09 | deep_structure | bug | Full scan | S2 | "i cant scan today" | fixed 0.8.2 (released 2026-11-09) |
 | [FB-038](#fb-038-show-auxs-tooltip-lines-only-while-holding-a-key) | 2026-11-09 | blackmyin | request | Settings | n/a | Show aux's tooltip lines only while holding a key | wont-fix (Tyler: the tooltip line switches cover it) |
 | [FB-039](#fb-039-full-scan-not-working-for-a-player-tyler-knows) | 2026-11-09 | a player Tyler knows (name not given) | bug | Full scan | S2 | Full scan "wasnt working" | fixed 0.8.2 (released 2026-11-09) |
+| [FB-040](#FB-040-random-suffix-stats-missing-on-fast-parent-tooltips) | 2026-11-06 | Eacail | bug | Search / tooltip | S2 | Random suffix +stats missing on Fast parent tooltips (opened auctions OK) | in-progress |
 
 ## Players
 
@@ -2041,6 +2042,39 @@ Recorder's notes (from the code and git):
 Unknowns: the version, what he saw (a chat message, a gray button, an error), and whether the
 Sniper was running. The fix works without them: 0.8.2 waits up to 10 minutes, nothing but the
 player's own search stops a Full scan, and every way it ends says why in the chat.
+
+### FB-040: Random suffix stats missing on Fast parent tooltips
+
+- Received: 2026-11-06
+- From: Eacail
+- Where: direct report while testing auxForever on Forever
+- Source: none (session notes)
+- Version: forever-0.7.1.1
+- Type: bug
+- Area: Search / tooltip
+- Severity: S2
+- Status: in-progress
+- Branch: fix/random-suffix-tooltip-stats
+- Proposed: this patch
+
+Said:
+> notice it does work when you right click a search result and it breaks out the auctions. that tooltip works but not the parent
+
+Steps / setup:
+1. Fast search for random-suffix gear (e.g. "of Strength", "of the Bear").
+2. Hover the parent Fast row icon: suffix name may show, rolled +stats do not.
+3. Open the item (click / break out auctions): hover an auction icon: +stats show.
+
+Recorder's notes:
+- Inference: Fast parent rows call `GameTooltip:SetItemKey`, which on Forever shows the suffix name
+  but often drops the bonus IDs that `C_Item.GetItemStats` needs. Opened auctions call
+  `SetHyperlink` with `result.itemLink`, which still carries the bonus IDs.
+- Fix: stash full links, inject missing +stat lines from `GetItemStats` deltas, remember one
+  auction link per `itemID:itemSuffix` so the Fast parent can reuse it after the item is opened,
+  and try a synthetic bonus link from `itemSuffix` when that works.
+
+Unknowns: whether Forever ever accepts `itemSuffix` as a bonus ID in a synthetic link without an
+opened auction; if not, parent rows need one open per item key per session.
 
 ## Before this log
 

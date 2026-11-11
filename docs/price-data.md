@@ -125,7 +125,8 @@ numbers with two jobs:
   Sniper's rule, the search % column, the Post tab's % badge, the percentage and profit filters,
   disenchant values. Tooltips show it as a percent on the Value line, "Value: 2s (67%)", in the
   Search tab's % of usual colors (0.8.2 build 4; before, a gray "usually ..." line when it
-  differed from the latest by 30% or more).
+  differed from the latest by 30% or more). Disenchant expected value uses **latest** mat prices
+  (with usual as fallback), so a tip's Disenchant: line matches today's reagents, not a stale usual day.
 - Build 3 test: a Full scan alone recorded Rough Dynamite at 30c, the same as its lowest listing
   (514 listed), so Full scan prices look right. Linen Cloth showed 32c while 296 were listed at
   23c: the average of the cheapest 20% reached up to 36c in a deep market. Build 4 changed the

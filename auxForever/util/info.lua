@@ -46,6 +46,31 @@ function M.duration_from_seconds(seconds)
     return 4
 end
 
+-- Forever: full auction itemLinks carry bonus IDs for random suffixes; Fast browse rows only
+-- have an ItemKey. Remember one working link per itemID:itemSuffix when an item search returns it.
+local suffix_link_by_key = {}
+
+function remember_suffix_link(item_id, item_suffix, link)
+    if type(link) ~= 'string' or not strfind(link, 'item:', 1, true)
+        or not item_id or not item_suffix or item_suffix == 0 then
+        return
+    end
+    suffix_link_by_key[item_id .. ':' .. item_suffix] = link
+    -- Warm the item cache so the first icon hover does not wait on GetItemStats
+    if C_Item and C_Item.RequestLoadItemDataByID then
+        C_Item.RequestLoadItemDataByID(item_id)
+    end
+end
+
+function M.suffix_link_for(item_id, item_suffix)
+    if not item_id or not item_suffix or item_suffix == 0 then
+        return
+    end
+    return suffix_link_by_key[item_id .. ':' .. item_suffix]
+end
+
+M.remember_suffix_link = remember_suffix_link
+
 function M.container_item(bag, slot)
 	local link = C_Container.GetContainerItemLink(bag, slot)
     if link then
@@ -253,6 +278,16 @@ function M.item_search_record(result)
     record.duration = result.timeLeftSeconds and duration_from_seconds(result.timeLeftSeconds) or duration_from_band(result.timeLeft)
     record.sale_status = 0
     signatures(record)
+    -- Forever: remember the full bonus link so Fast parent rows of this item key can show +stats.
+    -- pcall: never let suffix work abort building a search row (buy bar depends on these records).
+    local key = result.itemKey
+    if key and result.itemLink then
+        pcall(function()
+            remember_suffix_link(key.itemID, key.itemSuffix or 0, result.itemLink)
+            local tip = require 'aux.core.tooltip'
+            record.suffix_stats = tip.cache_suffix_stats(result.itemLink)
+        end)
+    end
     return record
 end
 
@@ -368,6 +403,9 @@ function M.owned_record(owned)
     signatures(record)
     -- 0.7.1 (FB-015): identical auctions of your own stay apart, each with its own row and cancel
     record.search_signature = record.search_signature .. ':' .. (owned.auctionID or 0)
+    if owned.itemKey and owned.itemLink then
+        remember_suffix_link(owned.itemKey.itemID, owned.itemKey.itemSuffix or 0, owned.itemLink)
+    end
     return record
 end
 
@@ -617,10 +655,254 @@ function M.parse_link(link)
     return tonumber(fields[1]) or 0, tonumber(fields[7]) or 0, tonumber(fields[8]) or 0, tonumber(fields[2]) or 0, name
 end
 
+-- Quality from the hyperlink color. Forever uses named item-quality colors
+-- (|cnIQ2: or |cnlQ2: — seen in game on Brawler's Harness); Classic hex
+-- (|cff1eff00) still appears on some paths. Prefer this over GetItemInfo when
+-- the two disagree (white shirt reported as uncommon, etc.).
+local LINK_QUALITY_HEX = {
+    ['9d9d9d'] = 0, -- poor
+    ['ffffff'] = 1, -- common
+    ['1eff00'] = 2, -- uncommon
+    ['0070dd'] = 3, -- rare
+    ['a335ee'] = 4, -- epic
+    ['ff8000'] = 5, -- legendary
+}
+
+function M.quality_from_link(link)
+    if type(link) ~= 'string' then
+        return
+    end
+    -- Forever / modern: |cnIQ2: or |cnIQ2|H... (and Forever's |cnlQ1: form).
+    local named = tonumber(strmatch(link, '|cn[IiLl]Q(%d+)'))
+    if named ~= nil then
+        return named
+    end
+    local rgb = strlower(strmatch(link, '|c%x%x(%x%x%x%x%x%x)') or '')
+    return LINK_QUALITY_HEX[rgb]
+end
+
+function M.item_id_from_link(link)
+    if type(link) ~= 'string' then
+        return
+    end
+    local ok, id = pcall(function()
+        return tonumber(strmatch(link, 'item:(%-?%d+)'))
+    end)
+    if ok then
+        return id
+    end
+end
+
+-- Forever "of the X" auction links carry numBonusIDs + bonus ids (field 13+). Tip GetItem /
+-- data.hyperlink for the same row often strip those, which zeroes GetItemStats deltas.
+function M.item_link_has_bonus_ids(link)
+    if type(link) ~= 'string' then
+        return false
+    end
+    local ok, payload = pcall(function()
+        return strmatch(link, 'item:(%-?%d+[:%d%-]*)')
+    end)
+    if not ok or not payload then
+        return false
+    end
+    local fields = {}
+    for part in string.gmatch(payload .. ':', '([^:]*):') do
+        tinsert(fields, part)
+    end
+    -- itemId, enchant, 4 gems, suffix, unique, level, spec, modifiers, context, numBonusIDs, ...
+    local num_bonus = tonumber(fields[13])
+    if num_bonus and num_bonus > 0 then
+        return true
+    end
+    local suffix = tonumber(fields[7])
+    return suffix ~= nil and suffix ~= 0
+end
+
+-- Forever TooltipDataProcessor: GetItem() is often a bare item: string; data.hyperlink still has
+-- |cnlQ1: / |cnIQ2:. Prefer any link that carries a quality color.
+-- Do not skip secret strings: Forever often secrets the tip hyperlink; skipping left only a stale
+-- last_link from a previous hover, which flipped white/green DE.
+function M.prefer_quality_link(...)
+    local fallback
+    for i = 1, select('#', ...) do
+        local link = select(i, ...)
+        if type(link) == 'string' then
+            local ok_item, has_item = pcall(function()
+                return strfind(link, 'item:', 1, true)
+            end)
+            if ok_item and has_item then
+                local ok_q, q = pcall(quality_from_link, link)
+                if ok_q and q ~= nil then
+                    return link
+                end
+                fallback = fallback or link
+            end
+        end
+    end
+    return fallback
+end
+
+-- Pick the link for a tip post-call.
+-- - Different-item last_link is ignored (stale white/green must not poison DE).
+-- - Same-item last_link with bonus IDs wins over a colored tip hyperlink that stripped them
+--   (otherwise "of the X" AH tips lose +stats).
+-- - Otherwise prefer a colored tip hyperlink / GetItem over last_link.
+function M.tip_item_link(last_link, hyperlink, get_item_link)
+    local tip_id = item_id_from_link(hyperlink) or item_id_from_link(get_item_link)
+    local remembered = last_link
+    if remembered and tip_id then
+        local last_id = item_id_from_link(remembered)
+        if last_id and last_id ~= tip_id then
+            remembered = nil
+        end
+    end
+    if remembered and item_link_has_bonus_ids(remembered)
+        and not item_link_has_bonus_ids(hyperlink)
+        and not item_link_has_bonus_ids(get_item_link) then
+        return remembered
+    end
+    return prefer_quality_link(hyperlink, get_item_link, remembered)
+end
+
+-- Coerce only plain strings/numbers. Never tonumber() a Forever secret value — that yields nil and
+-- wiped Disenchant % on every item.
+local function as_quality(q)
+    if q == nil then
+        return
+    end
+    if issecretvalue and issecretvalue(q) then
+        return q
+    end
+    local t = type(q)
+    if t == 'number' then
+        return q
+    end
+    if t == 'string' then
+        return tonumber(q)
+    end
+end
+
+-- Map the painted tip title color to a quality. Forever AH often passes a bare item: link and no
+-- usable ItemName.quality in the post-call payload; the name line is still white vs green on screen.
+local function quality_from_rgb(r, g, b)
+    if type(r) ~= 'number' or type(g) ~= 'number' or type(b) ~= 'number' then
+        return
+    end
+    if ITEM_QUALITY_COLORS then
+        local best, best_d
+        for q = 0, 5 do
+            local c = ITEM_QUALITY_COLORS[q]
+            if c and type(c.r) == 'number' then
+                local d = abs(c.r - r) + abs(c.g - g) + abs(c.b - b)
+                if not best_d or d < best_d then
+                    best, best_d = q, d
+                end
+            end
+        end
+        if best_d and best_d < 0.35 then
+            return best
+        end
+    end
+    -- Fallbacks when ITEM_QUALITY_COLORS is missing or stubbed.
+    if r > 0.85 and g > 0.85 and b > 0.85 then
+        return 1 -- common
+    end
+    if abs(r - 0.62) + abs(g - 0.62) + abs(b - 0.62) < 0.35 then
+        return 0 -- poor
+    end
+    if g > 0.7 and g >= r and g >= b and r < 0.55 then
+        return 2 -- uncommon
+    end
+    if b > 0.55 and b > r and b > g then
+        return 3 -- rare
+    end
+    if r > 0.45 and b > 0.55 and g < 0.45 then
+        return 4 -- epic
+    end
+end
+
+function M.quality_from_tooltip_title(tooltip)
+    if not tooltip or (issecretvalue and issecretvalue(tooltip)) then
+        return
+    end
+    local name = tooltip.GetName and tooltip:GetName()
+    local fs = name and _G[name .. 'TextLeft1']
+    if not fs or not fs.GetTextColor then
+        return
+    end
+    local ok, r, g, b = pcall(function() return fs:GetTextColor() end)
+    if not ok then
+        return
+    end
+    return quality_from_rgb(r, g, b)
+end
+
+-- Quality for disenchant tips. Order:
+-- 1) Colored link (|cnIQ / |cnlQ / hex) — Forever data.hyperlink after prefer_quality_link
+-- 2) Tip data ItemName.quality
+-- 3) Painted tip title color
+-- 4) C_Item.GetItemQualityByID
+-- 5) GetItemInfo.quality (last resort so greens still work when Forever gives no color signal)
+-- Prefer_quality_link is what stops whites: bare GetItem + white hyperlink must win over (5).
+function M.disenchant_quality(item_info, link, tip_quality, tooltip)
+    local from_hover = quality_from_link(link)
+    if from_hover ~= nil then
+        return from_hover
+    end
+    local from_tip = as_quality(tip_quality)
+    if from_tip ~= nil then
+        return from_tip
+    end
+    local from_title = quality_from_tooltip_title(tooltip)
+    if from_title ~= nil then
+        return from_title
+    end
+    local item_id = item_info and tonumber(item_info.item_id)
+        or (link and tonumber(strmatch(link, 'item:(%-?%d+)')))
+    if item_id and C_Item and C_Item.GetItemQualityByID then
+        local ok, q = pcall(C_Item.GetItemQualityByID, item_id)
+        if ok then
+            q = as_quality(q)
+            if q ~= nil then
+                return q
+            end
+        end
+    end
+    return item_info and item_info.quality
+end
+
+-- Forever ItemName rows carry .quality on TooltipDataProcessor callbacks.
+function M.quality_from_tooltip_data(data)
+    if type(data) ~= 'table' or (issecretvalue and issecretvalue(data)) then
+        return
+    end
+    local q = as_quality(data.quality)
+    if q ~= nil then
+        return q
+    end
+    local lines = data.lines
+    if type(lines) ~= 'table' then
+        return
+    end
+    for i = 1, #lines do
+        local line = lines[i]
+        if type(line) == 'table' and line.quality ~= nil then
+            -- Prefer ItemName (22) when the line type is present.
+            if line.type == nil or line.type == 22 then
+                q = as_quality(line.quality)
+                if q ~= nil then
+                    return q
+                end
+            end
+        end
+    end
+end
+
 function M.item(item_id, suffix_id)
     local itemstring = 'item:' .. (item_id or 0) .. '::::::' .. (suffix_id or 0)
     local name, link, quality, level, requirement, class, subclass, max_stack, slot, texture, sell_price = GetItemInfo(itemstring)
     return name and {
+        item_id = item_id,
         name = name,
         link = link,
         quality = quality,

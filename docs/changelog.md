@@ -6,6 +6,40 @@ CurseForge file's changelog box.
 A change that comes from a player's feedback credits them by in-game name at the end of its line:
 "(suggested by Darkhorse)" or "(reported by Darkhorse)". Who to credit is in `docs/feedback.md`.
 
+## Unreleased
+
+### Search / tooltips
+
+- Disenchant expected value uses each reagent's **latest** AH price (usual only as fallback). A green
+  weapon tip could show Disenchant: ~46s when Lesser Astral Essence's usual was still an old 40s day
+  while today was 8s; the line now tracks today's mats like Value: does.
+- of-the-X green +stats no longer leak onto the next tip (cloth, food, reagents, …). Suffix inject
+  only uses `last_hover` / cache for the same item id; OnUpdate retry aborts when the tip switches;
+  weapon `DAMAGE_PER_SECOND` is not painted as a green +stat. Local scanner:
+  `tests/test-suffix-leak.ps1` exports every Forever item-cache id and fails on any victim.
+
+- White/gray items no longer show Disenchant %; green gear still does. Forever's tip post-call often
+  has a bare `GetItem()` link and a colored `data.hyperlink` (`|cnlQ1:` / `|cnIQ2:`); aux prefers the
+  colored hyperlink, then tip quality / title color / `GetItemQualityByID`, then GetItemInfo.quality
+  as last resort. A prior hover's `last_link` no longer overrides this tip (that flipped white/green
+  DE in game while local tests stayed green).   Same-item auction links that still carry bonus IDs win
+  over a stripped tip hyperlink so "of the X" +stats stay on AH tips. Fast parent rows
+  (`SetItemKey`) note/cached suffix stats before the tip builds, and `link_for_item_key` may
+  synthesize a bonus link from `itemSuffix` when no auction link was remembered yet. Stat reads
+  prefer `C_Item.GetItemStats(link)` (Forever's global `GetItemStats` is often empty and used to
+  mask it). Covered by `basics: of-the-X prefers C_Item.GetItemStats over empty GetItemStats`.
+  Loop: `tests/test-de.ps1` (`-Deploy`, `-Watch`).
+- Tooltip smoke checks: `lua5.1 ../tests/load_test.lua smoke` and in-game `/aux smoke` (hover an
+  item first) cover disenchant / value / vendor lines so suffix work cannot wipe them unnoticed.
+- Disenchant chance and value show again after suffix inject: Forever's late `Show()` dropped those
+  AddLines, and internal `M.fn()` calls never ran (the module proxy has no `__index`). (reported
+  while testing FB-023)
+- Random-suffix gear ("of the Bear", "of Strength", ...) again shows its rolled +stats on auction
+  icon tooltips. Forever's Fast parent rows use `SetItemKey`, which often drops those bonuses;
+  opened auctions already had a full `itemLink`. aux now fills the missing green +stat lines from
+  `C_Item.GetItemStats`, and remembers a working link per item version so the Fast parent can show
+  the same stats after you open that item (reported by Eacail).
+
 ## 0.8.2 (2026-11-09)
 
 ### Sniper
@@ -199,7 +233,6 @@ A change that comes from a player's feedback credits them by in-game name at the
   Post settings saved for such gear (a hidden item, a duration) start fresh once.
 
 A **full game restart** is needed to update (new files).
-
 ## 0.7.1.1 (2026-10-19)
 
 ### Post tab

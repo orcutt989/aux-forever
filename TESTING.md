@@ -6,7 +6,41 @@ finished. The steps below are the same as on the page, for anyone testing withou
 
 If BugSack shows an error at any point, copy its full text into that step's note.
 
+## Local tests (no game client)
+
+Prefer these until they are green. They stub the WoW API in Lua 5.1 and exit 1 on failure.
+
+```
+cd auxForever
+lua5.1 ../tests/load_test.lua basics    # DE / value / vendor / suffix / money / buy bar
+lua5.1 ../tests/load_test.lua smoke     # fast tooltip matrix (Forever |cnIQ + Classic hex)
+lua5.1 ../tests/load_test.lua           # full suite
+```
+
+Windows one-shot: `powershell -File tests/test-basics.ps1` (syntax + basics + smoke).
+
+Suffix-leak finder (every item in your Forever aux cache — no hand-maintained list):
+
+```
+powershell -File tests/test-suffix-leak.ps1
+```
+
+Writes `tests/fixtures/suffix_leak_ids.tsv` from SavedVariables and, on failure,
+`tests/fixtures/suffix_leak_victims.tsv` (id + name of every tip that inherited of-the-X +stats).
+
 Current test page: https://claude.ai/artifact/LUCZVgJV27irizAyKHTjhJ (private to Tyler)
+
+## Unreleased build: suffix tooltip stats (FB-040, on top of 0.8.2)
+
+`/reload` after copying the `auxForever` folder. Disable any leftover `AuxSuffixFix` companion.
+
+- [ ] 1. Fast search for random-suffix gear. Hover a **parent** row icon: name may show the
+      suffix; +stats may be missing until step 2.
+- [ ] 2. Click the parent to open its auctions. Hover an auction icon: green `+N Stat` lines
+      (and/or the game's own suffix stats) are visible.
+- [ ] 3. Go back to the Fast list (or search again). Hover that same parent icon: the same
+      +stats now show (remembered link from the opened search).
+- [ ] 4. First search of the session still completes (no need to search twice).
 
 ## Current build: 0.8.2 build 8
 
@@ -563,7 +597,6 @@ Not checked by a test step: the post confirmation popup in gamepad mode (the ser
 not come up during testing; covered by the automated tests), Bids with Y (no bid was up).
 
 ### 0.7.1.1 build 2
-
 
 Fixes from FB-021 (sarrathsilentstrider could not post Rough Stone at 5c with the lowest at 7c)
 and from the new slow auction house in the tests, which plays each tab against answers that come
