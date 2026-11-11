@@ -162,6 +162,14 @@ function SlashCmdList.AUX(command)
         -- prices and writing new ones where they were never saved (outside review 2026-11-10, R-06)
         aux.wipe(aux.faction_data.post)
         aux.print('Post data cleared.')
+    elseif arguments[1] == 'suffix' then
+        for _, line in ipairs(require('aux.core.tooltip').suffix_report()) do
+            aux.print(line)
+        end
+    elseif arguments[1] == 'smoke' then
+        for _, line in ipairs(require('aux.core.tooltip').smoke_report()) do
+            aux.print(line)
+        end
 	else
 		aux.print('Usage:')
         aux.print('- scale [' .. aux.color.blue(aux.account_data.scale) .. ']')
@@ -186,6 +194,8 @@ function SlashCmdList.AUX(command)
 		aux.print('- debug list (times the item list of the whole auction house)')
 		aux.print('- memory (how much memory aux uses)')
 		aux.print('- price <item> (what aux has recorded for an item)')
+        aux.print('- suffix (dump random-suffix stats for the last hovered AH item)')
+        aux.print('- smoke (tooltip switches + DE/value/vendor check for the open tip)')
         aux.print('- clear post')
     end
 end
