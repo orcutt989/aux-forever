@@ -17,7 +17,6 @@ local BASICS_ONLY = (MODE == 'basics')
 local DE_ONLY = (MODE == 'de')
 local SUFFIX_LEAK_ONLY = (MODE == 'suffix-leak')
 local EARLY_EXIT = SMOKE_ONLY or BASICS_ONLY or DE_ONLY or SUFFIX_LEAK_ONLY
-local NUMERIC = { GetRight=1, GetLeft=1, GetTop=1, GetBottom=1, GetWidth=1, GetHeight=1, GetNumber=1, GetScale=1, GetEffectiveScale=1, GetAlpha=1, GetID=1, GetNumPoints=1, GetVerticalScroll=1, GetHorizontalScroll=1, GetCursorPosition=1, GetStringWidth=1, GetTextWidth=1, GetFrameLevel=1, GetValue=1 }
 local function new_frame(name)
   local f = { __scripts = {}, __events = {}, __name = name, __shown = true, __text = '' }
   return setmetatable(f, { __index = function(t, k)
@@ -5911,6 +5910,7 @@ try('0.8.2 build 6: Full scan button and % of usual in crafting', function()
   check('b6: the % of usual switch turns it off there too', not table.concat(lines, '\n'):find('%)', 1, true))
   a.character_data.tooltip.usually = true
   h.data['7701:0'] = nil; h.data['7702:0'] = nil
+end)
 
 -- White shirts (Brawler's Harness) must not show disenchant lines
 try('disenchant skips whites and shirts', function()

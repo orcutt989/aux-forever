@@ -545,7 +545,8 @@ function aux.event.AUX_LOADED()
         end
         local tip_quality
         pcall(function() tip_quality = info.quality_from_tooltip_data(data) end)
-        extend_tooltip(tooltip, link, tooltip_quantity(tooltip), tip_quality)
+        -- tip_quality for DE; data for Waylaid Crate bundle lines (tooltip_texts)
+        extend_tooltip(tooltip, link, tooltip_quantity(tooltip), tip_quality, data)
         pcall(schedule_suffix_stats, tooltip, link)
     end)
     aux.event_listener('GET_ITEM_INFO_RECEIVED', function(item_id, success)
@@ -593,7 +594,13 @@ function M.age_suffix(age)
     return '  ' .. color('seen ' .. text)
 end
 
-function extend_tooltip(tooltip, link, quantity, tip_quality)
+-- tip_quality: Forever ItemName quality when the link has no |cnIQ color.
+-- data: tooltip data table (crate bundle lines). Tests may still pass data as the 4th argument.
+function extend_tooltip(tooltip, link, quantity, tip_quality, data)
+    if type(tip_quality) == 'table' and data == nil then
+        data, tip_quality = tip_quality, nil
+        pcall(function() tip_quality = info.quality_from_tooltip_data(data) end)
+    end
     local item_id, suffix_id = info.parse_link(link)
     quantity = IsShiftKeyDown() and quantity or 1
     -- auxForever (0.5): with Shift held the prices are for the whole stack; say so ("for 3"). In build
